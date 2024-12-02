@@ -1,0 +1,131 @@
+import streamlit as st
+import os
+from PyFoam.RunDictionary.ParsedParameterFile import ParsedParameterFile
+from PyFoam.Execution.BasicRunner import BasicRunner
+import pyvista as pv
+
+
+# Function to set up the case and mesh
+def setup_case(case_dir, stl_file):
+    os.chdir(case_dir)
+    snappy_hex_dict = ParsedParameterFile('system/snappyHexMeshDict')
+    snappy_hex_dict['geometry']['object.stl'] = {'type': 'triSurfaceMesh', 'name': 'object'}
+    snappy_hex_dict.writeFile()
+
+    runner_block = BasicRunner(argv=["blockMesh"], silent=True, logname="blockMeshLog")
+    runner_block.start()
+
+    runner_snappy = BasicRunner(argv=["snappyHexMesh", "-overwrite"], silent=True, logname="snappyHexMeshLog")
+    runner_snappy.start()
+
+    return runner_snappy.runOK()
+
+
+# Function to configure turbulence model
+def set_turbulence_model(case_dir, model="kEpsilon"):
+    os.chdir(case_dir)
+    turb_file = ParsedParameterFile('constant/turbulenceProperties')
+    turb_file['simulationType'] = 'RASModel'
+    turb_file.writeFile()
+
+    ras_properties = ParsedParameterFile('constant/RASProperties')
+    ras_properties['RASModel'] = model
+    ras_properties['turbulence'] = 'on'
+    ras_properties['printCoeffs'] = 'on'
+    ras_properties.writeFile()
+
+
+# Function to refine the mesh around the object
+def refine_mesh(case_dir):
+    os.chdir(case_dir)
+    snappy_hex_dict = ParsedParameterFile('system/snappyHexMeshDict')
+    snappy_hex_dict['castellatedMeshControls']['refinementSurfaces'] = {
+        'object': {
+            'level': '(2 3)'
+        }
+    }
+    snappy_hex_dict.writeFile()
+
+
+# Function to configure simulation type (steady or transient)
+def setup_simulation_type(case_dir, simulation_type="steady", end_time=10, delta_t=0.01):
+    os.chdir(case_dir)
+    control_dict = ParsedParameterFile('system/controlDict')
+
+    if simulation_type == "transient":
+        control_dict['application'] = 'pisoFoam'
+        control_dict['startTime'] = 0
+        control_dict['endTime'] = end_time
+        control_dict['deltaT'] = delta_t
+    else:
+        control_dict['application'] = 'simpleFoam'
+
+    control_dict.writeFile()
+
+
+# Function to run the simulation
+def run_simulation(case_dir, simulation_type="steady"):
+    os.chdir(case_dir)
+    solver = "pisoFoam" if simulation_type == "transient" else "simpleFoam"
+    runner_solver = BasicRunner(argv=[solver], silent=True, logname=f"{solver}Log")
+    runner_solver.start()
+    return runner_solver.runOK()
+
+
+# Function to visualize results
+def visualize_results(case_dir):
+    os.chdir(case_dir)
+    data = pv.OpenFOAMReader('your_case.foam')
+    streamlines = data.streamlines('U', return_source=False)
+
+    plotter = pv.Plotter()
+    plotter.add_mesh(streamlines, color='blue', line_width=2)
+    plotter.show()
+
+
+# Streamlit App
+st.title("Wind Tunnel Simulation App")
+st.sidebar.header("Configuration")
+
+case_dir = st.sidebar.text_input("OpenFOAM Case Directory", "/path/to/openfoam/case")
+stl_file = st.sidebar.text_input("STL File", "/path/to/your/object.stl")
+
+turbulence_model = st.sidebar.selectbox("Turbulence Model", ["kEpsilon", "kOmegaSST"])
+simulation_type = st.sidebar.radio("Simulation Type", ["steady", "transient"])
+end_time = st.sidebar.number_input("End Time (for transient)", value=10, step=1)
+delta_t = st.sidebar.number_input("Time Step (for transient)", value=0.01, step=0.001)
+inlet_velocity = st.sidebar.slider("Inlet Velocity (m/s)", 0, 50, 10)
+
+if st.sidebar.button("Run Simulation"):
+    st.write("### Setting up case...")
+    setup_ok = setup_case(case_dir, stl_file)
+    if setup_ok:
+        st.success("Case setup completed.")
+    else:
+        st.error("Case setup failed.")
+
+    st.write("### Configuring turbulence model...")
+    set_turbulence_model(case_dir, model=turbulence_model)
+    st.success(f"Turbulence model set to {turbulence_model}.")
+
+    st.write("### Refining mesh...")
+    refine_mesh(case_dir)
+    st.success("Mesh refinement completed.")
+
+    st.write("### Setting up simulation type...")
+    setup_simulation_type(case_dir, simulation_type, end_time, delta_t)
+    st.success(f"Simulation type set to {simulation_type}.")
+
+    st.write("### Running simulation...")
+    sim_ok = run_simulation(case_dir, simulation_type)
+    if sim_ok:
+        st.success("Simulation completed successfully.")
+    else:
+        st.error("Simulation failed!")
+
+    st.write("### Visualizing results...")
+    try:
+        visualize_results(case_dir)
+        st.success("Visualization complete!")
+    except Exception as e:
+        st.error(f"Visualization failed: {e}")
